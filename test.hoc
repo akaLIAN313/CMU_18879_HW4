@@ -1,0 +1,38 @@
+// Create a single soma section
+create soma
+
+// Set the dimensions of the soma
+access soma
+soma {
+    L = 20      // Length of soma in microns
+    diam = 20   // Diameter of soma in microns
+    insert pas  // Insert passive properties
+}
+
+// Define simulation parameters
+tstop = 40      // Simulation time in ms
+v_init = -65    // Initial membrane potential in mV
+
+// Add a stimulus to the soma
+objref stim
+soma stim = new IClamp(0.5) // Insert current clamp at the middle of soma
+stim.del = 5               // Delay in ms
+stim.dur = 20              // Duration of stimulus in ms
+stim.amp = 0.1             // Amplitude of stimulus in nA
+
+// Record variables
+objref vvec, tvec
+vvec = new Vector() // To record membrane potential
+tvec = new Vector() // To record time
+vvec.record(&soma.v(0.5)) // Record voltage at the middle of soma
+tvec.record(&t)           // Record time
+
+// Run the simulation
+run()
+
+// Plot the results
+objref graph
+graph = new Graph(0)
+graph.size(0, tstop, -70, -50) // Set axes limits
+graph.addexpr("vvec.x[tvec.index($1)]", 2, 1, 1) // Plot recorded voltage
+graph.exec_menu("View = plot") // Display the plot
