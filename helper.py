@@ -100,6 +100,7 @@ def sample_1d(num_samples, theta_max, r):
     return samples
 
 def firing_rate(membrane_potential, t):
+    membrane_potential = np.array(membrane_potential, copy=True)  # ensures it's writable
     num_peaks, _ = find_peaks(membrane_potential, prominence=40)
     duration = np.max(t)/1000 # convert to seconds
     firing_rate = len(num_peaks)/duration #firing rate

@@ -15,7 +15,6 @@ from pymoo.optimize import minimize
 from pymoo.core.problem import Problem
 
 import matplotlib.pyplot as plt
-
 import time
 
 start_time = time.time()
@@ -42,7 +41,7 @@ def simulate_and_evaluate(x):
     (response_Pyr, _), (response_PV, _) = results
     fr_Pyr = firing_rate(response_Pyr, total_time)
     fr_PV = firing_rate(response_PV, total_time)
-    power = np.mean(np.abs(response_Pyr))
+    power = np.mean(np.square(response_Pyr))  # squared current = power
     return fr_Pyr, fr_PV, power
 
 def sample_initial_points():
@@ -66,32 +65,38 @@ def fit_gp_and_sample_function(X, y, n_features=500):
 
 # Run NSGA-II to get a Pareto front
 class GPProblem(Problem):
-    def __init__(self, f1, f2):
-        super().__init__(n_var=4, n_obj=2, xl=1, xu=200)
+    def __init__(self, f1, f2, f3):
+        super().__init__(n_var=4, n_obj=3, xl=1, xu=200)
         self.f1 = f1
         self.f2 = f2
+        self.f3 = f3
     def _evaluate(self, X, out, *args, **kwargs):
-        out["F"] = np.column_stack([-self.f1(X), self.f2(X)])  # maximize PV, minimize Pyr
+        out["F"] = np.column_stack([
+            -self.f1(X),        # maximize PV
+            self.f2(X),         # minimize Pyr
+            self.f3(X)          # minimize Power
+        ])
 
-def sample_pareto_frontiers(X_data, y_data, n_samples=10):
+def sample_pareto_frontiers(X_data, y_data, power_data, n_samples=10):
     fronts = []
     for _ in range(n_samples):
         f1 = fit_gp_and_sample_function(X_data, y_data[:, 1])  # PV
         f2 = fit_gp_and_sample_function(X_data, y_data[:, 0])  # Pyr
-        problem = GPProblem(f1, f2)
+        f3 = fit_gp_and_sample_function(X_data, power_data)    # Power
+        problem = GPProblem(f1, f2, f3)
         algorithm = NSGA2(pop_size=100)
         res = minimize(problem, algorithm, get_termination("n_gen", 30), seed=1, verbose=False)
         fronts.append(res.F)
     return fronts
 
 # Approximate entropy-based acquisition (PFES-lite)
-def approximate_pfes_acquisition(X_query, gp_pyr, gp_pv, sampled_fronts):
+def approximate_pfes_acquisition(X_query, gp_pyr, gp_pv, gp_power, sampled_fronts):
     mu_pyr, std_pyr = gp_pyr.predict(X_query, return_std=True)
     mu_pv, std_pv = gp_pv.predict(X_query, return_std=True)
-    # Score = probability of being non-dominated (informal)
+    mu_power, std_power = gp_power.predict(X_query, return_std=True)
     scores = np.zeros(len(X_query))
     for pf in sampled_fronts:
-        dominated = ((mu_pyr[:, None] >= pf[:, 1]) & (mu_pv[:, None] <= pf[:, 0])).any(axis=1)
+        dominated = ((mu_pyr[:, None] >= pf[:, 1]) & (mu_pv[:, None] <= pf[:, 0]) & (mu_power[:, None] <= pf[:, 2])).any(axis=1)
         scores += ~dominated
     return scores
 
@@ -109,11 +114,13 @@ power_data = Y_init[:, 2]
 for i in range(opt_trials):
     gp_pyr = GaussianProcessRegressor(RBF(), alpha=1e-6, normalize_y=True)
     gp_pv = GaussianProcessRegressor(RBF(), alpha=1e-6, normalize_y=True)
+    gp_power = GaussianProcessRegressor(RBF(), alpha=1e-6, normalize_y=True)
     gp_pyr.fit(X_data, y_data[:, 0])
     gp_pv.fit(X_data, y_data[:, 1])
-    
-    sampled_fronts = sample_pareto_frontiers(X_data, y_data, n_samples=10)
-    acquisition_scores = approximate_pfes_acquisition(grid_points, gp_pyr, gp_pv, sampled_fronts)
+    gp_power.fit(X_data, power_data)
+
+    sampled_fronts = sample_pareto_frontiers(X_data, y_data, power_data, n_samples=10)
+    acquisition_scores = approximate_pfes_acquisition(grid_points, gp_pyr, gp_pv, gp_power, sampled_fronts)
     next_x = grid_points[np.argmax(acquisition_scores)]
 
     fr_Pyr, fr_PV, power = simulate_and_evaluate(next_x)
@@ -121,8 +128,10 @@ for i in range(opt_trials):
     y_data = np.vstack([y_data, [fr_Pyr, fr_PV]])
     power_data = np.append(power_data, power)
     print(f"Iter {i}: Pyr {fr_Pyr}, PV {fr_PV}, Power {power}")
-print(x_data, y_data, power_data)
 
+print(X_data, y_data, power_data)
+
+end_time = time.time()
 duration = end_time - start_time
 print(f"Total runtime: {duration:.2f} sec ({duration/60:.2f} min)")
 
