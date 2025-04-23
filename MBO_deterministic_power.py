@@ -1,10 +1,13 @@
+import os
+import time
+from tqdm import trange
+import pickle
+
 import numpy as np
 import ray
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF
 from sklearn.preprocessing import StandardScaler
-from scipy.stats import norm
-from scipy.special import erf
 from simulation_Pyr import simulation_Pyr
 from simulation_PV import simulation_PV
 from helper import firing_rate
@@ -14,8 +17,8 @@ from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.optimize import minimize
 from pymoo.core.problem import Problem
 
-import matplotlib.pyplot as plt
-import time
+from MBO_logger import log_experiment_results
+
 
 start_time = time.time()
 ray.init(ignore_reinit_error=True, num_cpus=2)
@@ -29,8 +32,8 @@ X1, X2, X3, X4 = np.meshgrid(amp1_range, amp2_range, freq1_range, freq2_range, i
 grid_points = np.column_stack((X1.flatten(), X2.flatten(), X3.flatten(), X4.flatten()))
 n_grid_points = len(grid_points)
 
-init_trials = 5
-opt_trials = 15
+init_trials = 20
+opt_trials = 30
 
 def simulate_and_evaluate(x):
     amp1, amp2, freq1, freq2 = x
@@ -41,13 +44,16 @@ def simulate_and_evaluate(x):
     (response_Pyr, _), (response_PV, _) = results
     fr_Pyr = firing_rate(response_Pyr, total_time)
     fr_PV = firing_rate(response_PV, total_time)
-    power = np.mean(np.square(response_Pyr))  # squared current = power
+    power = deterministic_power(x)
     return fr_Pyr, fr_PV, power
+
+def deterministic_power(x):
+    amp1, amp2, *_ = x
+    return (amp1**2 + amp2**2) / 2
 
 def sample_initial_points():
     return grid_points[np.random.randint(0, n_grid_points, size=(init_trials))]
 
-# Train GP and sample function using RFF
 def fit_gp_and_sample_function(X, y, n_features=500):
     scaler = StandardScaler().fit(X)
     X_scaled = scaler.transform(X)
@@ -63,64 +69,69 @@ def fit_gp_and_sample_function(X, y, n_features=500):
         return gp.sample_y(Zq, n_samples=1).flatten()
     return sampled_function
 
-# Run NSGA-II to get a Pareto front
 class GPProblem(Problem):
-    def __init__(self, f1, f2, f3):
+    def __init__(self, f1, f2):
         super().__init__(n_var=4, n_obj=3, xl=1, xu=200)
         self.f1 = f1
         self.f2 = f2
-        self.f3 = f3
     def _evaluate(self, X, out, *args, **kwargs):
-        out["F"] = np.column_stack([
-            -self.f1(X),        # maximize PV
-            self.f2(X),         # minimize Pyr
-            self.f3(X)          # minimize Power
-        ])
+        f1_vals = -self.f1(X)  # maximize PV
+        f2_vals = self.f2(X)   # minimize Pyr
+        f3_vals = np.array([deterministic_power(x) for x in X])  # deterministic power
+        out["F"] = np.column_stack([f1_vals, f2_vals, f3_vals])
 
-def sample_pareto_frontiers(X_data, y_data, power_data, n_samples=10):
+def sample_pareto_frontiers(X_data, y_data, n_samples=10):
     fronts = []
     for _ in range(n_samples):
         f1 = fit_gp_and_sample_function(X_data, y_data[:, 1])  # PV
         f2 = fit_gp_and_sample_function(X_data, y_data[:, 0])  # Pyr
-        f3 = fit_gp_and_sample_function(X_data, power_data)    # Power
-        problem = GPProblem(f1, f2, f3)
+        problem = GPProblem(f1, f2)
         algorithm = NSGA2(pop_size=100)
         res = minimize(problem, algorithm, get_termination("n_gen", 30), seed=1, verbose=False)
         fronts.append(res.F)
     return fronts
 
-# Approximate entropy-based acquisition (PFES-lite)
-def approximate_pfes_acquisition(X_query, gp_pyr, gp_pv, gp_power, sampled_fronts):
-    mu_pyr, std_pyr = gp_pyr.predict(X_query, return_std=True)
-    mu_pv, std_pv = gp_pv.predict(X_query, return_std=True)
-    mu_power, std_power = gp_power.predict(X_query, return_std=True)
+def approximate_pfes_acquisition(X_query, gp_pyr, gp_pv, sampled_fronts):
+    mu_pyr, _ = gp_pyr.predict(X_query, return_std=True)
+    mu_pv, _ = gp_pv.predict(X_query, return_std=True)
+    mu_power = np.array([deterministic_power(x) for x in X_query])
     scores = np.zeros(len(X_query))
     for pf in sampled_fronts:
         dominated = ((mu_pyr[:, None] >= pf[:, 1]) & (mu_pv[:, None] <= pf[:, 0]) & (mu_power[:, None] <= pf[:, 2])).any(axis=1)
         scores += ~dominated
     return scores
 
-# Initialize
-X_init = sample_initial_points()
-Y_init = np.zeros((len(X_init), 3))
-for i, x in enumerate(X_init):
-    Y_init[i] = simulate_and_evaluate(x)
+cache_file = "init_cache.pkl"
+if os.path.exists(cache_file):
+    with open(cache_file, "rb") as f:
+        X_data, y_data, power_data = pickle.load(f)
+    print("Loaded cached initial evaluations.")
+else:
+    X_init = sample_initial_points()
+    Y_init = np.zeros((len(X_init), 3))
+    for i, x in enumerate(X_init):
+        Y_init[i] = simulate_and_evaluate(x)
+
+    X_data = X_init.copy()
+    y_data = Y_init[:, :2]
+    power_data = Y_init[:, 2]
+
+    with open(cache_file, "wb") as f:
+        pickle.dump((X_data, y_data, power_data), f)
+    print("Initial evaluations completed and cached.")
 
 X_data = X_init.copy()
-y_data = Y_init[:, :2]  # Pyr, PV
+y_data = Y_init[:, :2]
 power_data = Y_init[:, 2]
 
-# Begin optimization
-for i in range(opt_trials):
+for i in trange(opt_trials, desc="BO Iteration", unit="iter"):
     gp_pyr = GaussianProcessRegressor(RBF(), alpha=1e-6, normalize_y=True)
     gp_pv = GaussianProcessRegressor(RBF(), alpha=1e-6, normalize_y=True)
-    gp_power = GaussianProcessRegressor(RBF(), alpha=1e-6, normalize_y=True)
     gp_pyr.fit(X_data, y_data[:, 0])
     gp_pv.fit(X_data, y_data[:, 1])
-    gp_power.fit(X_data, power_data)
 
-    sampled_fronts = sample_pareto_frontiers(X_data, y_data, power_data, n_samples=10)
-    acquisition_scores = approximate_pfes_acquisition(grid_points, gp_pyr, gp_pv, gp_power, sampled_fronts)
+    sampled_fronts = sample_pareto_frontiers(X_data, y_data)
+    acquisition_scores = approximate_pfes_acquisition(grid_points, gp_pyr, gp_pv, sampled_fronts)
     next_x = grid_points[np.argmax(acquisition_scores)]
 
     fr_Pyr, fr_PV, power = simulate_and_evaluate(next_x)
@@ -129,9 +140,13 @@ for i in range(opt_trials):
     power_data = np.append(power_data, power)
     print(f"Iter {i}: Pyr {fr_Pyr}, PV {fr_PV}, Power {power}")
 
-print(X_data, y_data, power_data)
-
 end_time = time.time()
 duration = end_time - start_time
 print(f"Total runtime: {duration:.2f} sec ({duration/60:.2f} min)")
+
+try:
+    script_name = os.path.basename(__file__)
+except NameError:
+    script_name = 'interactive_or_unknown'
+log_experiment_results(X_data, y_data, power_data, script_name=script_name, duration=duration)
 

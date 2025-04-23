@@ -99,12 +99,12 @@ def sample_1d(num_samples, theta_max, r):
     samples = sph_to_cart(samples)
     return samples
 
-def firing_rate(membrane_potential, t):
+def get_firing_rate_and_first_ISI(membrane_potential, t):
     membrane_potential = np.array(membrane_potential, copy=True)  # ensures it's writable
-    num_peaks, _ = find_peaks(membrane_potential, prominence=40)
+    peak_idxs, _ = find_peaks(membrane_potential, prominence=40)
     duration = np.max(t)/1000 # convert to seconds
-    firing_rate = len(num_peaks)/duration #firing rate
-    return firing_rate
+    firing_rate = len(peak_idxs)/duration #firing rate
+    return firing_rate, peak_idxs[0] if firing_rate > 0 else np.max(t)
 
 def sample_switch_points(total_iterations,num_switches = 5):
     switch_points = np.random.choice(np.arange(1,total_iterations),num_switches,replace=False)
