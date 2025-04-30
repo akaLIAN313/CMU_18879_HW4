@@ -99,12 +99,53 @@ def sample_1d(num_samples, theta_max, r):
     samples = sph_to_cart(samples)
     return samples
 
-def get_firing_rate_and_first_ISI(membrane_potential, t):
-    membrane_potential = np.array(membrane_potential, copy=True)  # ensures it's writable
-    peak_idxs, _ = find_peaks(membrane_potential, prominence=40)
-    duration = np.max(t)/1000 # convert to seconds
-    firing_rate = len(peak_idxs)/duration #firing rate
-    return firing_rate, peak_idxs[0] if firing_rate > 0 else np.max(t)
+def _find_spike_times(response, t, prominence=40, height=None, **kwargs):
+    # Basic check for valid array inputs kept for core functionality
+    response_arr= np.array(response, copy=True)  # ensures it's writable
+    peak_idxs, _ = find_peaks(response_arr, prominence=prominence, height=height, **kwargs)
+    if len(peak_idxs) == 0:
+        return np.array([])
+    else:
+        # Ensure indices are within bounds of t
+        peak_idxs = peak_idxs[peak_idxs < len(t)]
+        return t[peak_idxs]
+
+def calculate_fr(response, t, prominence=40, height=None, **kwargs):
+    spike_times = _find_spike_times(response, t, prominence=prominence, height=height, **kwargs)
+    n_spikes = len(spike_times)
+    if n_spikes == 0: # Keep check for no spikes -> zero rate
+        return 0.0
+    duration_sec = (t[-1] - t[0]) / 1000.0 # Assumes len(t) > 1 and duration > 0
+    firing_rate = n_spikes / duration_sec
+    return firing_rate
+
+def calculate_latency(response, t, prominence=40, height=None, **kwargs):
+    spike_times = _find_spike_times(response, t, prominence=prominence, height=height, **kwargs)
+    # Assumes spikes are found, otherwise index [0] will error
+    if len(spike_times) == 0:
+        return np.nan # Keep check for no spikes -> NaN latency
+    return spike_times[0]
+
+def calculate_cv(response, t, prominence=40, height=None, min_spikes_for_cv=3, **kwargs):
+    spike_times = _find_spike_times(response, t, prominence=prominence, height=height, **kwargs)
+    print(spike_times)
+    n_spikes = len(spike_times)
+    # Removed check for min_spikes_for_cv - will error if n_spikes < 2
+    if n_spikes < 2: # Need at least 1 ISI
+        return np.nan
+    isis = np.diff(spike_times)
+    # Removed check for len(isis) < 2
+    if len(isis) == 0: # Need at least 1 ISI
+        return np.nan
+    mean_isi = np.mean(isis)
+    std_isi = np.std(isis)
+    # Removed check for mean_isi > 1e-9 - division by zero possible
+    # Handle potential division by zero explicitly
+    if abs(mean_isi) < 1e-12: # Check against a very small number
+        return np.nan
+    cv = std_isi / mean_isi
+    return cv
+
 
 def sample_switch_points(total_iterations,num_switches = 5):
     switch_points = np.random.choice(np.arange(1,total_iterations),num_switches,replace=False)

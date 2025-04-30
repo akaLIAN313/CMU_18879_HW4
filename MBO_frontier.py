@@ -10,7 +10,7 @@ from sklearn.gaussian_process.kernels import RBF
 from sklearn.preprocessing import StandardScaler
 from simulation_Pyr import simulation_Pyr
 from simulation_PV import simulation_PV
-from helper import get_firing_rate_and_first_ISI
+from helper import calculate_fr, calculate_latency, calculate_cv
 
 from pymoo.termination import get_termination
 from pymoo.algorithms.moo.nsga2 import NSGA2
@@ -32,8 +32,8 @@ X1, X2, X3, X4 = np.meshgrid(amp1_range, amp2_range, freq1_range, freq2_range, i
 grid_points = np.column_stack((X1.flatten(), X2.flatten(), X3.flatten(), X4.flatten()))
 n_grid_points = len(grid_points)
 
-init_trials = 20
-opt_trials = 30
+init_trials = 5
+opt_trials = 15
 
 def deterministic_power(x):
     amp1, amp2, *_ = x
@@ -64,8 +64,10 @@ def simulate_and_evaluate(x):
         simulation_PV.remote(num_electrode=1, amp1=amp1, amp2=amp2, freq1=freq1, freq2=freq2, total_time=total_time, plot_waveform=False)
     ])
     (response_Pyr, t), (response_PV, _) = results
-    fr_Pyr, latency = get_firing_rate_and_first_ISI(response_Pyr, t)
-    fr_PV, _ = get_firing_rate_and_first_ISI(response_PV, t)
+    
+    fr_Pyr = calculate_fr(response_Pyr, t)
+    fr_PV = calculate_fr(response_PV, t)
+    latency = calculate_latency(response_PV, t)
     power = deterministic_power(x)
     return fr_Pyr, fr_PV, power, latency
 

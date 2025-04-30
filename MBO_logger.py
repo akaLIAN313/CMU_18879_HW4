@@ -1,7 +1,7 @@
 import os
 from datetime import datetime
 
-def log_experiment_results(X_data, y_data, power_data, script_name, duration=None, log_dir="logs"):
+def log_experiment_results(X_data, Y_data, script_name, duration=None, log_dir="logs"):
     os.makedirs(log_dir, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -14,7 +14,7 @@ def log_experiment_results(X_data, y_data, power_data, script_name, duration=Non
             f.write(f"Total Runtime: {duration:.2f} sec ({duration/60:.2f} min)\n")
         f.write("="*50 + "\n")
         f.write("X\tY (Pyr, PV)\tPower\n")
-        for x, y, p in zip(X_data, y_data, power_data):
-            f.write(f"{x.tolist()}\t{y.tolist()}\t{p:.2f}\n")
+        for x, y in zip(X_data, Y_data):
+            f.write(f"{x.tolist()}\t{y.tolist()}\n")
     print(f"Results logged to {log_file}")
 
