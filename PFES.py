@@ -19,10 +19,10 @@ from pymoo.core.problem import Problem
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
 from MBO_logger import log_experiment_results
 
-
+# --- Configuration and Initialization ---
 start_time = time.time()
 timestamp = time.strftime("%Y%m%d-%H%M%S")
-ray.init(ignore_reinit_error=True, num_cpus=2) # Adjust num_cpus as needed
+ray.init(ignore_reinit_error=True, num_cpus=2) # Initialize Ray for parallel computing
 
 # --- Simulation & Optimization Parameters ---
 total_time = 500 # ms
@@ -35,9 +35,10 @@ X1, X2, X3, X4 = np.meshgrid(amp1_range, amp2_range, freq1_range, freq2_range, i
 grid_points = np.column_stack((X1.flatten(), X2.flatten(), X3.flatten(), X4.flatten()))
 n_grid_points = len(grid_points)
 
-init_trials = 5  # Number of initial random evaluations
-opt_trials = 15 # Number of BO iterations
-n_objective_functions = 6 # Updated number of objectives
+# Optimization parameters
+init_trials = 5   # Number of initial random evaluations
+opt_trials = 15   # Number of Bayesian optimization iterations
+n_objective_functions = 6  # Total number of objectives to optimize
 
 # --- Objective Functions & Evaluation ---
 def deterministic_power(x):
@@ -46,7 +47,20 @@ def deterministic_power(x):
     return (amp1**2 + amp2**2) / 2 # Example power calculation
 
 def simulate_and_evaluate(x):
-    """Runs simulations and calculates all objectives."""
+    """Runs neural simulations and evaluates all objectives.
+    
+    Args:
+        x: Array of parameters [amp1, amp2, freq1, freq2]
+        
+    Returns:
+        tuple: (fr_Pyr, fr_PV, power, latency, cv_Pyr, cv_PV)
+            fr_Pyr: Pyramidal neuron firing rate (minimize)
+            fr_PV: PV neuron firing rate (maximize)
+            power: Power consumption (minimize)
+            latency: Response latency (minimize)
+            cv_Pyr: Pyramidal CV (minimize)
+            cv_PV: PV CV (minimize)
+    """
     amp1, amp2, freq1, freq2 = x
     results = ray.get([
         simulation_Pyr.remote(num_electrode=1, amp1=amp1, amp2=amp2, freq1=freq1, freq2=freq2, total_time=total_time, plot_waveform=False),
@@ -146,7 +160,19 @@ def sample_pareto_frontiers(X_data, Y_data, n_samples=10):
 
 # --- Acquisition Function (PFES Approximation) ---
 def approximate_pfes_acquisition(X_query, gps, sampled_fronts):
-    """Calculates acquisition score based on non-domination probability w.r.t. sampled fronts."""
+    """Calculates acquisition scores based on non-domination probability.
+    
+    Uses Predictive Pareto Front Sampling (PFES) to estimate the probability
+    of candidates being non-dominated with respect to sampled Pareto fronts.
+    
+    Args:
+        X_query: Candidate points to evaluate
+        gps: Dictionary of fitted GP models for each objective
+        sampled_fronts: List of previously sampled Pareto fronts
+        
+    Returns:
+        ndarray: Acquisition scores for each candidate point
+    """
     # Predict means for all stochastic objectives using provided GPs dictionary
     mu_pyr_fr, _ = gps['pyr_fr'].predict(X_query, return_std=True)
     mu_pv_fr, _ = gps['pv_fr'].predict(X_query, return_std=True)
